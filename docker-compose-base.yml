@@ -1,6 +1,7 @@
 version: "2.1"
 services:
   example-consumer-base:
+    image: ehealthafrica/aether-kafka-viewer
     build: ./example
     stdin_open: true
     tty: true
