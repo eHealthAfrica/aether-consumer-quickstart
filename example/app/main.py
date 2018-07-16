@@ -4,9 +4,13 @@ import os
 import json
 import signal
 import sys
+from time import sleep
 
 from aet.consumer import KafkaConsumer
 from blessings import Terminal
+from kafka import TopicPartition
+
+EXCLUDED_TOPICS = ['__confluent.support.metrics']
 
 
 class timeout(contextlib.ContextDecorator):
@@ -34,6 +38,8 @@ class timeout(contextlib.ContextDecorator):
 
 t = Terminal()
 
+def clear():
+    print(t.clear())
 
 def bold(obj):
     print(t.bold(obj))
@@ -62,11 +68,11 @@ class KafkaViewer(object):
         self.killed = False
         signal.signal(signal.SIGINT, self.kill)
         signal.signal(signal.SIGTERM, self.kill)
-        self.start()
+        clear()
         self.topics()
 
     def ask(self, options):
-        bold("Select an option from the list")
+        bold("Select an option from the list\n")
         for x, opt in enumerate(options, 1):
             line = "%s ) %s" % (x, opt)
             norm(line)
@@ -79,30 +85,13 @@ class KafkaViewer(object):
             except Exception as err:
                 error("%s is not a valid option | %s" % (x, err))
 
-    def start(self):
-        args = {}
-        consumer_settings_path = os.environ['CONSUMER_CONFIG']
-        with open(consumer_settings_path) as f:
-            args = json.load(f)
-        consumer_connect_prompt = args.get('consumer_connect_prompt')
-        while True:
-            try:
-                with timeout(5):
-                    bold(consumer_connect_prompt %
-                         os.environ['HOSTNAME'])
-                    input("...\n")
-                    return
-            except TimeoutError:
-                if self.killed:
-                    return
-
     def get_consumer(self, quiet=False, topic=None):
         args = {}
         kafka_settings_path = os.environ['KAFKA_CONFIG']
         with open(kafka_settings_path) as f:
             args = json.load(f)
         if not quiet:
-            t.clear()
+            clear()
             pjson(["Creating Consumer from %s args:" % kafka_settings_path, args])
         self.connect_consumer(**args)
         if not self.consumer:
@@ -130,30 +119,52 @@ class KafkaViewer(object):
     def kill(self, *args, **kwargs):
         self.killed = True
 
+    def get_topic_size(self, topic):
+        self.get_consumer(True, topic)
+        while not self.consumer.poll():
+            sleep(0.1)
+        self.consumer.seek_to_end()
+        partitions = [TopicPartition(topic, p) for p in self.consumer.partitions_for_topic(topic)]
+        end_offsets = self.consumer.end_offsets(partitions)
+        self.consumer.close(autocommit=False)
+        size = sum([i for i in end_offsets.values()])
+        return size
+
     def topics(self):
         while True:
-            t.clear()
+            topic_size = {}
             self.get_consumer(quiet=True)
-            quit_str = "Exit KafkaViewer"
-            topics = [i for i in self.consumer.topics()]
+            refresh_str = "-> Refresh Topics"
+            quit_str = "-> Exit KafkaViewer\n"
+            bold('Fetching Topics')
+            topics = sorted([i for i in self.consumer.topics() if not i in EXCLUDED_TOPICS])
             if not topics:
                 bold("No topics available")
-            topics.append(quit_str)
+            for topic in topics:
+                topic_size[topic] = self.get_topic_size(topic)
+            clear()
+            prompt_key = { "topic: %s {%s}" % (topic, topic_size[topic]) : topic for topic in topics }
+            prompts = sorted(prompt_key.keys())
+            prompts.extend([refresh_str, quit_str])
             bold("Choose a Topic to View")
-            topic = self.ask(topics)
+            norm("-> topic {# of offsets in topic}\n")
+            topic = self.ask(prompts)
+            topic = prompt_key.get(topic) if topic in prompt_key else topic
             if topic is quit_str:
                 return
+            elif topic is refresh_str:
+                clear()
+                continue
             self.get_consumer(topic=topic)
             self.consumer.seek_to_beginning()
             self.show_topic()
 
-    def show_topic(self, batch_size=100):
+    def show_topic(self, batch_size=50):
         current = 0
         while True:
             messages = self.consumer.poll_and_deserialize(1000, batch_size)
             if not messages:
-                t.clear()
-                norm("No messages available!")
+                norm("No more messages available!")
                 return
             part = 0
             choices = [i for i in messages.keys()]
@@ -163,33 +174,40 @@ class KafkaViewer(object):
                 messages = messages.get(choices[part])
             else:
                 messages = messages.get(choices[0])
-            if not self.view_messages(messages, batch_size, current):
+            messages_read = self.view_messages(messages, batch_size, current)
+            if not messages_read:
                 return
-            current += batch_size
+            current += messages_read
 
     def view_messages(self, messages, batch_size, current):
         options = [
             "Next Message",
-            "Skip forward %s messages" % (batch_size),
+            "Skip forward to next package of messages",
             "View Current Schema",
-            "Exit to List of Available Topics"
+            "Exit to List of Available Topics\n"
         ]
+        pulled_size = sum([1 for message in messages for msg in message.get('messages') ])
         for x, message in enumerate(messages):
-            t.clear()
-            norm("message #%s (%s of batch sized %s)" %
-                 (current + x, x, batch_size))
-            for msg in message.get('messages'):
+            if not message.get('messages'):
+                bold('\nThe current settings return no messages\n')
+            for y, msg in enumerate(message.get('messages')):
+                norm("message #%s (%s of batch sized %s)" %
+                 (current + 1, y + 1, pulled_size))
                 pjson(msg)
                 res = self.ask(options)
                 idx = options.index(res)
                 if idx == 1:
-                    return True
+                    clear()
+                    return pulled_size
                 elif idx == 2:
-                    t.clear()
                     pjson(message.get('schema'))
                     wait()
                 elif idx == 3:
+                    clear()
                     return False
+                else:
+                    clear()
+                current +=1
 
 
 if __name__ == "__main__":
