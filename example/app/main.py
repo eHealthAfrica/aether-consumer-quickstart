@@ -3,6 +3,7 @@ import errno
 import os
 import json
 import signal
+import sys
 
 from aet.consumer import KafkaConsumer
 from blessings import Terminal
@@ -80,7 +81,8 @@ class KafkaViewer(object):
 
     def start(self):
         args = {}
-        with open("/code/conf/consumer/consumer.json") as f:
+        consumer_settings_path = os.environ['CONSUMER_CONFIG']
+        with open(consumer_settings_path) as f:
             args = json.load(f)
         consumer_connect_prompt = args.get('consumer_connect_prompt')
         while True:
@@ -96,12 +98,16 @@ class KafkaViewer(object):
 
     def get_consumer(self, quiet=False, topic=None):
         args = {}
-        with open("/code/conf/consumer/kafka.json") as f:
+        kafka_settings_path = os.environ['KAFKA_CONFIG']
+        with open(kafka_settings_path) as f:
             args = json.load(f)
         if not quiet:
             t.clear()
-            pjson(["Creating Consumer from conf.json args:", args])
+            pjson(["Creating Consumer from %s args:" % kafka_settings_path, args])
         self.connect_consumer(**args)
+        if not self.consumer:
+            raise Exception('Could not connect to Kafka')
+            sys.exit(1)
         if topic:
             self.consumer.subscribe(topic)
 
