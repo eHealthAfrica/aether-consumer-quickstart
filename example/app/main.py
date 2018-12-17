@@ -158,8 +158,10 @@ class KafkaViewer(object):
                     return sum(subtotals)
                 parts = [i for i in messages.keys()]
                 for part in parts:
-                    messages = messages.get(parts[part])
-                    subtotals.append(sum([1 for m in messages]))
+                    bundles = messages.get(part)
+                    for bundle in bundles:
+                        _msgs = bundle.get('messages')
+                        subtotals.append(sum([1 for m in _msgs]))
         except Exception as err:
             raise err
         finally:
