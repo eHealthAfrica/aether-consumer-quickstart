@@ -178,11 +178,22 @@ class KafkaViewer(object):
         size = sum([i for i in end_offsets.values()])
         return size
 
+    def print_topic_sizes(self, topics):
+        clear()
+        bold("Topic -> Count")
+        for t in topics:
+            size = self.count_all_topic_messages(t)
+            norm("%s -> %s" % (t, size))
+        wait()
+        clear()
+        return
+
     def topics(self):
         while True:
             topic_size = {}
             self.get_consumer(quiet=True)
             refresh_str = "-> Refresh Topics"
+            detailed_str = "-> Get Real Message Counts for Topics"
             quit_str = "-> Exit KafkaViewer\n"
             bold('Fetching Topics')
             topics = sorted([i for i in self.consumer.topics() if not i in EXCLUDED_TOPICS])
@@ -193,7 +204,7 @@ class KafkaViewer(object):
             clear()
             prompt_key = { "topic: %s {%s}" % (topic, topic_size[topic]) : topic for topic in topics }
             prompts = sorted(prompt_key.keys())
-            prompts.extend([refresh_str, quit_str])
+            prompts.extend([detailed_str, refresh_str, quit_str])
             bold("Choose a Topic to View")
             norm("-> topic {# of offsets in topic}\n")
             topic = self.ask(prompts)
@@ -203,6 +214,10 @@ class KafkaViewer(object):
             elif topic is refresh_str:
                 clear()
                 continue
+            elif topic is detailed_str:
+                self.print_topic_sizes(topics)
+                continue
+
             self.get_consumer(topic=topic)
             self.consumer.seek_to_beginning()
             self.show_topic()
