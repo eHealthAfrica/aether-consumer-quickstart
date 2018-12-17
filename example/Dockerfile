@@ -1,25 +1,22 @@
-FROM python:3.6-slim
+FROM python:3.6-slim-jessie
 
 ################################################################################
 ## setup container
 ################################################################################
+
+RUN apt-get update -qq \
+    && apt-get -qq --yes --force-yes install gcc \
+    && pip install --upgrade pip
 
 ################################################################################
 ## install app
 ## copy files one by one and split commands to use docker cache
 ################################################################################
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc  python-dev \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /code
 
-COPY ./conf/pip /code/conf/pip
-
-RUN pip3 install -f /code/conf/pip/dependencies -r /code/conf/pip/requirements.txt
-
-RUN apt-get purge -y --auto-remove gcc python-dev
+COPY ./conf/pip /code/pip
+RUN pip install -r /code/pip/requirements.txt
 
 COPY ./ /code
 

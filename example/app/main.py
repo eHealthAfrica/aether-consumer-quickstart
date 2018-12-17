@@ -1,4 +1,25 @@
+#!/usr/bin/env python
+
+# Copyright (C) 2018 by eHealth Africa : http://www.eHealthAfrica.org
+#
+# See the NOTICE file distributed with this work for additional information
+# regarding copyright ownership.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 import contextlib
+import enum
 import errno
 import os
 import json
@@ -36,7 +57,7 @@ class timeout(contextlib.ContextDecorator):
             return True
 
 
-t = Terminal()
+
 
 def clear():
     print(t.clear())
@@ -64,7 +85,12 @@ def wait():
 
 class KafkaViewer(object):
 
-    def __init__(self):
+    def __init__(self, interactive=True):
+        if interactive:
+            self.start()
+        
+
+    def start(self):
         self.killed = False
         signal.signal(signal.SIGINT, self.kill)
         signal.signal(signal.SIGTERM, self.kill)
@@ -119,7 +145,29 @@ class KafkaViewer(object):
     def kill(self, *args, **kwargs):
         self.killed = True
 
-    def get_topic_size(self, topic):
+    def count_all_topic_messages(self, topic):  # individual messages
+        subtotals = []
+        self.get_consumer(True, topic)
+        while not self.consumer.poll():
+            sleep(0.1)
+        self.consumer.seek_to_beginning()
+        try:
+            while True:
+                messages = self.consumer.poll_and_deserialize(1000, 1000)
+                if not messages:
+                    return sum(subtotals)
+                parts = [i for i in messages.keys()]
+                for part in parts:
+                    bundles = messages.get(part)
+                    for bundle in bundles:
+                        _msgs = bundle.get('messages')
+                        subtotals.append(sum([1 for m in _msgs]))
+        except Exception as err:
+            raise err
+        finally:
+            self.consumer.close()
+        
+    def get_topic_size(self, topic):  # offsets
         self.get_consumer(True, topic)
         while not self.consumer.poll():
             sleep(0.1)
@@ -130,11 +178,22 @@ class KafkaViewer(object):
         size = sum([i for i in end_offsets.values()])
         return size
 
+    def print_topic_sizes(self, topics):
+        clear()
+        bold("Topic -> Count")
+        for t in topics:
+            size = self.count_all_topic_messages(t)
+            norm("%s -> %s" % (t, size))
+        wait()
+        clear()
+        return
+
     def topics(self):
         while True:
             topic_size = {}
             self.get_consumer(quiet=True)
             refresh_str = "-> Refresh Topics"
+            detailed_str = "-> Get Real Message Counts for Topics"
             quit_str = "-> Exit KafkaViewer\n"
             bold('Fetching Topics')
             topics = sorted([i for i in self.consumer.topics() if not i in EXCLUDED_TOPICS])
@@ -145,7 +204,7 @@ class KafkaViewer(object):
             clear()
             prompt_key = { "topic: %s {%s}" % (topic, topic_size[topic]) : topic for topic in topics }
             prompts = sorted(prompt_key.keys())
-            prompts.extend([refresh_str, quit_str])
+            prompts.extend([detailed_str, refresh_str, quit_str])
             bold("Choose a Topic to View")
             norm("-> topic {# of offsets in topic}\n")
             topic = self.ask(prompts)
@@ -155,6 +214,10 @@ class KafkaViewer(object):
             elif topic is refresh_str:
                 clear()
                 continue
+            elif topic is detailed_str:
+                self.print_topic_sizes(topics)
+                continue
+
             self.get_consumer(topic=topic)
             self.consumer.seek_to_beginning()
             self.show_topic()
@@ -208,7 +271,40 @@ class KafkaViewer(object):
                 else:
                     clear()
                 current +=1
+    
+    def view_topics(self):
+        self.get_consumer(quiet=True)
+        return sorted([i for i in self.consumer.topics() if not i in EXCLUDED_TOPICS])
+
+
+def get_arg(pos, args):
+    try:
+        if len(args) > pos:
+            return args[pos]
+    except ValueError:
+        print(f'{args[pos]} was a bad value for position {pos}')
+        return None
+
+class CMD(enum.Enum):
+    LIST = 1
+    COUNT = 2
 
 
 if __name__ == "__main__":
-    viewer = KafkaViewer()
+    args = sys.argv
+    try:
+        cmd = CMD[get_arg(1, args)]
+        viewer = KafkaViewer(interactive=False)
+        if cmd is CMD.LIST:
+            print(viewer.view_topics())
+        elif cmd is CMD.COUNT:
+            topic = get_arg(2, args)
+            if not topic:
+                raise ValueError('No topic specified.')
+            count = viewer.count_all_topic_messages(topic)
+            print("%s individual messages in topic: %s" % (topic, count))
+
+    except KeyError:
+        global t
+        t = Terminal()
+        viewer = KafkaViewer()
