@@ -301,7 +301,7 @@ class KafkaViewer(object):
                     return False
                 else:
                     clear()
-                current + = 1
+                current += 1
 
     def view_topics(self):
         with timeout(5):
