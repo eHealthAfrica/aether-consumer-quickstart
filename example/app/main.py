@@ -31,6 +31,9 @@ from aet.consumer import KafkaConsumer
 from blessings import Terminal
 from kafka import TopicPartition
 
+from logger import LOG
+
+
 EXCLUDED_TOPICS = ['__confluent.support.metrics']
 
 
@@ -48,19 +51,23 @@ class timeout(contextlib.ContextDecorator):
         raise TimeoutError(self.timeout_message)
 
     def __enter__(self):
+        LOG.info(f'alarm in {self.seconds}')
         signal.signal(signal.SIGALRM, self._timeout_handler)
         signal.alarm(self.seconds)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not TimeoutError:
+            LOG.info(f'exit before alarm.')
+        else:
+            LOG.info(f'TIMEOUT')
         signal.alarm(0)
         if self.suppress and exc_type is TimeoutError:
             return True
 
 
-
-
 def clear():
     print(t.clear())
+
 
 def bold(obj):
     print(t.bold(obj))
@@ -88,7 +95,6 @@ class KafkaViewer(object):
     def __init__(self, interactive=True):
         if interactive:
             self.start()
-        
 
     def start(self):
         self.killed = False
@@ -149,8 +155,12 @@ class KafkaViewer(object):
         subtotals = []
         self.get_consumer(True, topic)
         while not self.consumer.poll():
-            sleep(0.1)
-        self.consumer.seek_to_beginning()
+            try:
+                self.consumer.seek_to_beginning()
+                break
+            except AssertionError:
+                LOG.info(f'{topic} waiting for consumer poll...')
+                sleep(0.25)
         try:
             while True:
                 messages = self.consumer.poll_and_deserialize(1000, 1000)
@@ -166,12 +176,17 @@ class KafkaViewer(object):
             raise err
         finally:
             self.consumer.close()
-        
+
     def get_topic_size(self, topic):  # offsets
         self.get_consumer(True, topic)
         while not self.consumer.poll():
-            sleep(0.1)
-        self.consumer.seek_to_end()
+            try:
+                self.consumer.seek_to_end()
+                break
+            except AssertionError:
+                LOG.info(f'{topic} waiting for consumer poll...')
+                sleep(0.25)
+
         partitions = [TopicPartition(topic, p) for p in self.consumer.partitions_for_topic(topic)]
         end_offsets = self.consumer.end_offsets(partitions)
         self.consumer.close(autocommit=False)
@@ -195,12 +210,28 @@ class KafkaViewer(object):
             refresh_str = "-> Refresh Topics"
             detailed_str = "-> Get Real Message Counts for Topics"
             quit_str = "-> Exit KafkaViewer\n"
+            LOG.info(f'fetching topics')
             bold('Fetching Topics')
-            topics = sorted([i for i in self.consumer.topics() if not i in EXCLUDED_TOPICS])
+            topics = None
+            with timeout(5):
+                topics = sorted([i for i in self.consumer.topics() if i not in EXCLUDED_TOPICS])
+                LOG.info(f'found topics {topics}')
+                bold(f'Inspecting topics {topics}')
             if not topics:
+                LOG.info(f'no topics found')
                 bold("No topics available")
             for topic in topics:
-                topic_size[topic] = self.get_topic_size(topic)
+                LOG.info(f'inspecting topic: {topic}')
+                bold(f'Inspecting topic: {topic}')
+                try:
+                    with timeout(5):
+                        topic_size[topic] = self.get_topic_size(topic)
+                        LOG.info(f'{topic} size: {topic_size[topic]}')
+                        bold('...Success')
+                except TimeoutError:
+                    topic_size[topic] = 'timed-out'
+                    bold('...Failure!')
+
             clear()
             prompt_key = { "topic: %s {%s}" % (topic, topic_size[topic]) : topic for topic in topics }
             prompts = sorted(prompt_key.keys())
@@ -255,7 +286,7 @@ class KafkaViewer(object):
                 bold('\nThe current settings return no messages\n')
             for y, msg in enumerate(message.get('messages')):
                 norm("message #%s (%s of batch sized %s)" %
-                 (current + 1, y + 1, pulled_size))
+                     (current + 1, y + 1, pulled_size))
                 pjson(msg)
                 res = self.ask(options)
                 idx = options.index(res)
@@ -270,11 +301,12 @@ class KafkaViewer(object):
                     return False
                 else:
                     clear()
-                current +=1
-    
+                current + = 1
+
     def view_topics(self):
-        self.get_consumer(quiet=True)
-        return sorted([i for i in self.consumer.topics() if not i in EXCLUDED_TOPICS])
+        with timeout(5):
+            self.get_consumer(quiet=True)
+            return sorted([i for i in self.consumer.topics() if not i in EXCLUDED_TOPICS])
 
 
 def get_arg(pos, args):
@@ -284,6 +316,7 @@ def get_arg(pos, args):
     except ValueError:
         print(f'{args[pos]} was a bad value for position {pos}')
         return None
+
 
 class CMD(enum.Enum):
     LIST = 1
